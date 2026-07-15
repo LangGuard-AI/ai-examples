@@ -46,10 +46,15 @@ mapfile -t READ_REPOS < <(jqtrace '
   | select(.name|startswith("mcp__github__"))
   | select(.input.owner and .input.repo) | "\(.input.owner)/\(.input.repo)"' | sort -u)
 
-# --- did the agent request a WRITE via safe-outputs? sink = this workflow repo ---
-WROTE=$(jqtrace '
-  select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")
-  | select(.name|test("mcp__safeoutputs__(add_comment|create_|update_|push_|submit_|reply_)")) | .name' | head -1)
+# --- did the agent propose a WRITE? read it from the STAGED SAFE-OUTPUTS, not the
+# trace: the agent can emit a safe output via several paths (MCP tool, writing the
+# safeoutputs file directly, a sub-agent), so agent_output.json is the reliable
+# signal for "the agent is about to write to this repo". Sink = this workflow repo.
+OUT="${GH_AW_AGENT_OUTPUT:-$TD_DIR/agent_output.json}"
+WROTE=""
+if [ -s "$OUT" ] && jq -e '(.items // []) | map(select(.type != "noop" and .type != "missing_tool" and .type != "report_incomplete")) | length > 0' "$OUT" >/dev/null 2>&1; then
+  WROTE="$(jq -r '[.items[]? | .type] | join(",")' "$OUT" 2>/dev/null)"
+fi
 
 echo "reads: ${READ_REPOS[*]:-none}"
 echo "write: ${WROTE:-none}  (sink repo: ${GITHUB_REPOSITORY:-unknown})"
