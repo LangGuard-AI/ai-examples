@@ -19,18 +19,24 @@ write_block() { jq -n --arg r "${1:-flow violation}" '{prompt_injection:false,se
 allow() { write_safe; echo "LangGuard flow arbiter: ALLOW — $1"; exit 0; }
 deny()  { write_block "$1"; echo "::error title=Blocked by LangGuard (information-flow violation)::$1"; exit 1; }
 
-# --- locate the agent stream-json tool-call trace ---
+# --- obtain the AUTHORITATIVE agent stream-json tool-call trace ---
+# The detection job stages an EMPTY placeholder at /tmp/gh-aw/agent-stdio.log, so
+# always download this run's 'agent' artifact and use that; only fall back to a
+# staged copy if it actually contains tool calls.
 TRACE=""
-for c in "$TD_DIR/agent/agent-stdio.log" "$TD_DIR/agent-stdio.log" /tmp/gh-aw/agent-stdio.log; do
-  [ -f "$c" ] && TRACE="$c" && break
-done
-if [ -z "$TRACE" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-  echo "trace not staged locally — downloading the 'agent' artifact"
-  gh run download "$GITHUB_RUN_ID" -R "${GITHUB_REPOSITORY:-}" -n agent -D "$TD_DIR/agent" >/dev/null 2>&1 || true
-  [ -f "$TD_DIR/agent/agent-stdio.log" ] && TRACE="$TD_DIR/agent/agent-stdio.log"
+DLDIR="$TD_DIR/agent-artifact"
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+  rm -rf "$DLDIR"; mkdir -p "$DLDIR"
+  gh run download "$GITHUB_RUN_ID" -R "${GITHUB_REPOSITORY:-}" -n agent -D "$DLDIR" >/dev/null 2>&1 || true
+  [ -s "$DLDIR/agent-stdio.log" ] && TRACE="$DLDIR/agent-stdio.log"
 fi
-[ -n "$TRACE" ] || allow "no agent trace available to evaluate (nothing read)"
-echo "using tool-call trace: $TRACE"
+if [ -z "$TRACE" ]; then
+  for c in "$TD_DIR/agent/agent-stdio.log" "$TD_DIR/agent-stdio.log" /tmp/gh-aw/agent-stdio.log; do
+    if [ -s "$c" ] && grep -q '"type":"tool_use"' "$c" 2>/dev/null; then TRACE="$c"; break; fi
+  done
+fi
+[ -n "$TRACE" ] || allow "no agent tool-call trace available (nothing to evaluate)"
+echo "using tool-call trace: $TRACE ($(wc -l < "$TRACE") lines)"
 
 jqtrace() { jq -R 'fromjson? // empty' "$TRACE" | jq -rc "$1"; }
 
